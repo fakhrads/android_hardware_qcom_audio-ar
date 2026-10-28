@@ -1,0 +1,25 @@
+// The audio AIDL generation these HALs implement.
+//
+// The latest_* defaults follow hardware/interfaces/audio/aidl, which is at
+// android.hardware.audio.core V4, but the framework compatibility matrix only
+// accepts core and effect 1-3, and core V4 adds IStreamCommon methods this HAL
+// does not implement. Use the core V3 generation and the versions it imports.
+cc_defaults {
+    name: "qti_audio_aidl_core_ndk_shared",
+    shared_libs: ["android.hardware.audio.core-V3-ndk"],
+}
+
+cc_defaults {
+    name: "qti_audio_aidl_core_sounddose_ndk_shared",
+    shared_libs: ["android.hardware.audio.core.sounddose-V3-ndk"],
+}
+
+cc_defaults {
+    name: "qti_audio_aidl_effect_ndk_shared",
+    shared_libs: ["android.hardware.audio.effect-V3-ndk"],
+}
+
+cc_defaults {
+    name: "qti_audio_aidl_common_types_ndk_shared",
+    shared_libs: ["android.media.audio.common.types-V4-ndk"],
+}
