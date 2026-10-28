@@ -439,13 +439,26 @@ outputFlagsStreamtypeMap populatemOutputFlagsStreamtypeMap() {
     constexpr auto inCallMusicFlags =
             static_cast<int32_t>(1 << flagCastToint(AudioOutputFlags::INCALL_MUSIC));
     result[inCallMusicFlags] = PAL_STREAM_VOICE_CALL_MUSIC;
+    // Effect libraries such as Dolby's libqtigefar look up single flags.
+    constexpr auto fastPlaybackFlags =
+            static_cast<int32_t>(1 << flagCastToint(AudioOutputFlags::FAST));
+    result[fastPlaybackFlags] = PAL_STREAM_LOW_LATENCY;
+    constexpr auto compressPlaybackFlags =
+            static_cast<int32_t>(1 << flagCastToint(AudioOutputFlags::COMPRESS_OFFLOAD));
+    result[compressPlaybackFlags] = PAL_STREAM_COMPRESSED;
     return result;
 }
 
 const static outputFlagsStreamtypeMap kOutputFlagsStreamtypeMap =
         populatemOutputFlagsStreamtypeMap();
 pal_stream_type_t PlatformConverter::getPalStreamTypeId(int32_t outputFlag) noexcept {
-    return kOutputFlagsStreamtypeMap.at(outputFlag);
+    auto element = kOutputFlagsStreamtypeMap.find(outputFlag);
+    if (element == kOutputFlagsStreamtypeMap.cend()) {
+        LOG(ERROR) << __func__ << " failed to find pal stream type for output flags "
+                   << outputFlag;
+        return PAL_STREAM_DEEP_BUFFER;
+    }
+    return element->second;
 }
 
 // static
