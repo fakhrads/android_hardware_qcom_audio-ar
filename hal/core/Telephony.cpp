@@ -125,6 +125,12 @@ ndk::ScopedAStatus Telephony::switchAudioMode(AudioMode newAudioMode) {
         }
     }
 
+    if (mAudioMode == AudioMode::IN_COMMUNICATION && newAudioMode != AudioMode::IN_COMMUNICATION) {
+        if (mPlatform.getMicMuteStatus()) {
+            mPlatform.setMicMuteStatus(false);
+        }
+    }
+
     mAudioMode = newAudioMode;
     LOG(DEBUG) << __func__ << ": switching to AudioMode:" << toString(mAudioMode);
     return ndk::ScopedAStatus::ok();
@@ -280,8 +286,7 @@ void Telephony::setDevices(const std::vector<AudioDevice>& devices, const bool u
         /* USB TX capability is ready may later then USB RX devices. Here is to update
          * TX device if voice call already start on USB RX devices.
          */
-        if (isAnyCallActive() &&
-            (mTxDevice.type.type != devices[0].type.type)) {
+        if (mIsVoiceStarted && (mTxDevice.type.type != devices[0].type.type)) {
             if (isUsbDevice(devices[0]) && isUsbDevice(mRxDevice)) {
                 if (!isUsbDeviceConnected(devices[0])) {
                     LOG(DEBUG) << __func__ << ": usb_tx is not connected ";
@@ -290,7 +295,7 @@ void Telephony::setDevices(const std::vector<AudioDevice>& devices, const bool u
             }
             mTxDevice = devices[0];
             updateDevices();
-       }
+        }
     }
 }
 
@@ -428,10 +433,11 @@ void Telephony::onExternalDeviceConnectionChanged(const AudioDevice& extDevice,
              iter++;
         }
         if (CRSPluginDevices.empty()) {
-            mRxDevice = kDefaultRxDevice;
-            mTxDevice = getMatchingTxDevice(mRxDevice);
-            if (mIsCRSStarted)
+            if (mIsCRSStarted) {
+                mRxDevice = kDefaultRxDevice;
+                mTxDevice = getMatchingTxDevice(mRxDevice);
                 updateDevices();
+            }
         } else {
             if (mIsCRSStarted)
                 updateDevices();
@@ -485,10 +491,11 @@ void Telephony::onBluetoothScoEvent(const bool& enable) {
                iter++;
           }
           if (CRSPluginDevices.empty()) {
-              mRxDevice = kDefaultRxDevice;
-              mTxDevice = getMatchingTxDevice(mRxDevice);
-              if (mIsCRSStarted)
+              if (mIsCRSStarted) {
+                  mRxDevice = kDefaultRxDevice;
+                  mTxDevice = getMatchingTxDevice(mRxDevice);
                   updateDevices();
+              }
           } else {
               if (mIsCRSStarted)
                   updateDevices();

@@ -9,6 +9,8 @@ AUDIO_USE_STUB_HAL := true
 endif
 endif
 
+TARGET_USES_VENDOR_C2_AUDIO_HAL := false
+$(warning "C2 audio compilation disabled")
 
 #BOARD_USES_GENERIC_AUDIO := true
 
@@ -253,10 +255,14 @@ PRODUCT_COPY_FILES += \
     $(CONFIG_HAL_SRC_DIR)/mixer_paths_parrot_idp_sku1.xml:$(CONFIG_SKU_OUT_DIR)/mixer_paths_parrot_idp_sku1.xml \
     $(CONFIG_PAL_SRC_DIR)/resourcemanager_parrot_idp_sku1.xml:$(CONFIG_SKU_OUT_DIR)/resourcemanager_parrot_idp_sku1.xml \
     $(CONFIG_PAL_SRC_DIR)/usecaseKvManager.xml:$(TARGET_COPY_OUT_VENDOR)/etc/usecaseKvManager.xml \
-    vendor/qcom/opensource/audio-hal/primary-hal/configs/common/media_codecs_vendor_audio.xml:$(TARGET_COPY_OUT_VENDOR)/etc/media_codecs_vendor_audio.xml \
     frameworks/native/data/etc/android.hardware.audio.pro.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.audio.pro.xml \
     frameworks/native/data/etc/android.hardware.audio.low_latency.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.audio.low_latency.xml \
     frameworks/native/data/etc/android.hardware.sensor.dynamic.head_tracker.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/sku_$(DEVICE_SKU)/android.hardware.sensor.dynamic.head_tracker.xml
+
+ifeq ($(TARGET_USES_VENDOR_C2_AUDIO_HAL), true)
+PRODUCT_COPY_FILES +=  \
+    vendor/qcom/opensource/audio-hal/primary-hal/configs/common/media_codecs_vendor_audio.xml:$(TARGET_COPY_OUT_VENDOR)/etc/media_codecs_vendor_audio.xml
+endif
 
 # Copy AudioEffects config
 PRODUCT_COPY_FILES += \
