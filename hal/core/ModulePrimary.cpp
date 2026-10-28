@@ -31,6 +31,7 @@
 #include <memunreachable/memunreachable.h>
 
 #include <aidl/qti/audio/core/VString.h>
+#include <extensions/UltrasoundProximity.h>
 #include <qti-audio-core/Bluetooth.h>
 #include <qti-audio-core/ModulePrimary.h>
 #include <qti-audio-core/Parameters.h>
@@ -167,6 +168,7 @@ binder_status_t ModulePrimary::dump(int fd, const char** args, uint32_t numArgs)
 
 ModulePrimary::ModulePrimary() : Module(Type::DEFAULT) {
     mOffloadSpeedSupported = mPlatform.platformSupportsOffloadSpeed();
+    ultrasoundProximityStart();
 }
 
 ndk::ScopedAStatus ModulePrimary::getMicrophones(std::vector<MicrophoneInfo>* _aidl_return) {

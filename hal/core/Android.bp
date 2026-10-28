@@ -97,7 +97,10 @@ cc_library_static {
         "-Wthread-safety",
     ],
 
-    srcs: ["extensions/AudioExtension.cpp"],
+    srcs: [
+        "extensions/AudioExtension.cpp",
+        "extensions/UltrasoundProximity.cpp",
+    ],
 
     export_include_dirs: ["extensions/include"],
 
@@ -108,10 +111,12 @@ cc_library_static {
     ],
 
     header_libs: [
+        "libarosal_headers",
         "libarpal_headers",
         "libaudioclient_headers",
         "libexpectedutils_headers",
         "libmedia_helper_headers",
+        "libspf-headers",
     ],
 
     shared_libs: [
