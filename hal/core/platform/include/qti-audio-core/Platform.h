@@ -19,6 +19,7 @@
 #include <qti-audio-core/AudioUsecase.h>
 #include <system/audio.h>
 
+#include <atomic>
 #include <unordered_map>
 
 namespace qti::audio::core {
@@ -183,6 +184,12 @@ class Platform {
     int handleDeviceConnectionChange(
             const ::aidl::android::media::audio::common::AudioPort& deviceAudioPort,
             const bool isConnect) const;
+    /*
+     * true when the connected A2DP device now wants another mixer rate than the
+     * one published at connection, so the device has to be reconnected instead
+     * of reconfigured in place.
+     */
+    bool isBluetoothA2dpMixerRateStale() const;
     uint32_t getBluetoothLatencyMs(
             const std::vector<::aidl::android::media::audio::common::AudioDevice>&
                     bluetoothDevices);
@@ -323,6 +330,11 @@ class Platform {
     void configurePalDevicesForHIFIPCMFilter(std::vector<pal_device>&) const noexcept;
     std::vector<::aidl::android::media::audio::common::AudioProfile> getUsbProfiles(
             const ::aidl::android::media::audio::common::AudioPort& port) const;
+    std::vector<::aidl::android::media::audio::common::AudioProfile> getBluetoothA2dpProfiles()
+            const;
+    std::optional<int32_t> queryBluetoothA2dpMixerRate() const;
+    // mixer rate published for the connected A2DP device, 0 when none is connected
+    mutable std::atomic<int32_t> mA2dpMixerSampleRate{0};
 
     std::optional<struct HdmiParameters> getHdmiParameters(
             const ::aidl::android::media::audio::common::AudioDevice&) const;

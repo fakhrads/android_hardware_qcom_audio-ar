@@ -508,6 +508,66 @@ std::vector<::aidl::android::media::audio::common::AudioProfile> Platform::getUs
     return getSupportedAudioProfiles(deviceCapability.get(), "usb");
 }
 
+std::optional<int32_t> Platform::queryBluetoothA2dpMixerRate() const {
+    auto dynamicMediaConfig = std::make_unique<dynamic_media_config_t>();
+    auto deviceCapability = std::make_unique<pal_param_device_capability_t>();
+    deviceCapability->id = PAL_DEVICE_OUT_BLUETOOTH_A2DP;
+    deviceCapability->is_playback = true;
+    deviceCapability->config = dynamicMediaConfig.get();
+
+    size_t payloadSize = 0;
+    void* deviceCapabilityPtr = deviceCapability.get();
+    if (int32_t ret = pal_get_param(PAL_PARAM_ID_DEVICE_CAPABILITY, &deviceCapabilityPtr,
+                                    &payloadSize, nullptr);
+        ret != 0) {
+        LOG(DEBUG) << __func__ << ": A2DP mixer rate not available now, ret " << ret;
+        return std::nullopt;
+    }
+    if (!dynamicMediaConfig->jack_status || dynamicMediaConfig->sample_rate[0] == 0) {
+        return std::nullopt;
+    }
+    return static_cast<int32_t>(dynamicMediaConfig->sample_rate[0]);
+}
+
+/*
+ * The A2DP device port and the mix ports filled from it (a2dp_deep_buffer_out)
+ * get one rate: the one PAL asks for from the negotiated encoder (44.1 kHz for
+ * aptX Adaptive at 44.1 kHz), 48 kHz otherwise. The profile is always explicit,
+ * so the mixer keeps its 24/32 bit formats instead of the 16 bit XML profile.
+ */
+std::vector<AudioProfile> Platform::getBluetoothA2dpProfiles() const {
+    const int32_t rate = queryBluetoothA2dpMixerRate().value_or(
+            static_cast<int32_t>(kDefaultOutputSampleRate));
+    mA2dpMixerSampleRate = rate;
+    LOG(INFO) << __func__ << ": A2DP mixer rate " << rate;
+
+    auto makeProfile = [rate](PcmType pcmType) {
+        return AudioProfile{
+                .name = "bt_a2dp_out",
+                .format = AudioFormatDescription{.type = AudioFormatType::PCM, .pcm = pcmType},
+                .channelMasks = {AudioChannelLayout::make<AudioChannelLayout::layoutMask>(
+                        AudioChannelLayout::LAYOUT_STEREO)},
+                .sampleRates = {rate}};
+    };
+    return {makeProfile(PcmType::INT_16_BIT), makeProfile(PcmType::INT_24_BIT),
+            makeProfile(PcmType::INT_32_BIT)};
+}
+
+bool Platform::isBluetoothA2dpMixerRateStale() const {
+    const int32_t published = mA2dpMixerSampleRate;
+    if (published == 0) {
+        return false;
+    }
+    const auto current = queryBluetoothA2dpMixerRate();
+    // While a session streams PAL cannot tell. Only reconnect when the published
+    // rate is ours; at the default rate keep the in place reconfiguration.
+    const bool stale = current ? *current != published
+                               : published != static_cast<int32_t>(kDefaultOutputSampleRate);
+    LOG(INFO) << __func__ << ": published " << published << ", current "
+              << (current ? std::to_string(*current) : "unknown") << ", stale " << stale;
+    return stale;
+}
+
 std::vector<AudioProfile> Platform::getDynamicProfiles(
         const AudioPort& dynamicDeviceAudioPort) const {
     const auto& deviceExtTag = dynamicDeviceAudioPort.ext.getTag();
@@ -524,6 +584,10 @@ std::vector<AudioProfile> Platform::getDynamicProfiles(
 
     if (isUsbDevice(devicePortExt.device)) {
         return getUsbProfiles(dynamicDeviceAudioPort);
+    }
+
+    if (isBluetoothA2dpDevice(devicePortExt.device) && isOutputDevice(devicePortExt.device)) {
+        return getBluetoothA2dpProfiles();
     }
 
     LOG(VERBOSE) << __func__ << " unsupported " << dynamicDeviceAudioPort.toString();
@@ -587,6 +651,10 @@ int Platform::handleDeviceConnectionChange(const AudioPort& deviceAudioPort,
 
     deviceConnection->connection_state = isConnect;
     deviceConnection->id = palDeviceId;
+
+    if (!isConnect && palDeviceId == PAL_DEVICE_OUT_BLUETOOTH_A2DP) {
+        mA2dpMixerSampleRate = 0;
+    }
 
     if (isUsbDevice(devicePortExt.device)) {
         const auto& addressTag = devicePortExt.device.address.getTag();

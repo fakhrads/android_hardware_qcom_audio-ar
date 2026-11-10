@@ -302,8 +302,9 @@ ndk::ScopedAStatus ModulePrimary::createOutputStream(
 
 std::vector<::aidl::android::media::audio::common::AudioProfile> ModulePrimary::getDynamicProfiles(
         const ::aidl::android::media::audio::common::AudioPort& audioPort) {
-    if (isUsbDevice(audioPort.ext.get<AudioPortExt::Tag::device>().device)) {
-        /* as of now, we do dynamic fetching for usb devices*/
+    const auto& device = audioPort.ext.get<AudioPortExt::Tag::device>().device;
+    if (isUsbDevice(device) || (isBluetoothA2dpDevice(device) && isOutputDevice(device))) {
+        /* usb devices and the A2DP mixer rate are fetched dynamically */
         auto dynamicProfiles = mPlatform.getDynamicProfiles(audioPort);
         return dynamicProfiles;
     }

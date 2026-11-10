@@ -136,6 +136,10 @@ ndk::ScopedAStatus BluetoothA2dp::setEnabled(bool in_enabled) {
 ndk::ScopedAStatus BluetoothA2dp::supportsOffloadReconfiguration(bool* _aidl_return) {
     bool supportReconfig = property_get_bool("ro.bluetooth.a2dp_offload.supported", false) &&
                            !property_get_bool("persist.bluetooth.a2dp_offload.disabled", false);
+    // A new mixer rate needs the output reopened, which only a reconnection does.
+    if (supportReconfig && mPlatform.isBluetoothA2dpMixerRateStale()) {
+        supportReconfig = false;
+    }
     *_aidl_return = supportReconfig;
     LOG(DEBUG) << __func__ << ": returning " << *_aidl_return;
     return ndk::ScopedAStatus::ok();
