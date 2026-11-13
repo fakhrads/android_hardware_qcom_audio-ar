@@ -153,6 +153,7 @@ class StreamOutPrimary : public StreamOut, public StreamCommonImpl, public Platf
 
   private:
     std::string mLogPrefix = "";
+    std::vector<float> applyVoipEarpieceHeadroom(const std::vector<float>& volumes) const;
     bool isHwVolumeSupported();
     bool isHwFlushSupported();
     bool isHwPauseSupported();
