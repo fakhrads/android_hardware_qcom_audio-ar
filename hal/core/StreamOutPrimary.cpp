@@ -704,7 +704,7 @@ ndk::ScopedAStatus StreamOutPrimary::getHwVolume(std::vector<float>* _aidl_retur
  * earpiece by scaling the requested volume. The speaker, Bluetooth and cellular calls are not
  * touched, and mVolumes keeps the unscaled value so device switches reapply it correctly.
  */
-static constexpr float kVoipEarpieceMaxGain = 0.7627f;
+static constexpr float kVoipEarpieceMaxGain = 0.725f;
 
 std::vector<float> StreamOutPrimary::applyVoipEarpieceHeadroom(
         const std::vector<float>& volumes) const {
