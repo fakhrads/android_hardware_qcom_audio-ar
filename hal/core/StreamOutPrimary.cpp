@@ -139,6 +139,12 @@ ndk::ScopedAStatus StreamOutPrimary::setConnectedDevices(
         const std::vector<::aidl::android::media::audio::common::AudioDevice>& devices) {
     mWorker->setIsConnected(!devices.empty());
     mConnectedDevices = devices;
+    mOnEarpiece.store(std::any_of(devices.cbegin(), devices.cend(),
+                                  [](const auto& d) {
+                                      return d.type.type == ::aidl::android::media::audio::common::
+                                                                    AudioDeviceType::OUT_SPEAKER_EARPIECE;
+                                  }),
+                      std::memory_order_relaxed);
     mVoipLimiter.reset();
 
     return configureConnectedDevices_I();
@@ -452,7 +458,7 @@ void StreamOutPrimary::resume() {
         return burstZero();
     }
 
-    if (mTag == Usecase::VOIP_PLAYBACK && onEarpiece()) {
+    if (mTag == Usecase::VOIP_PLAYBACK && mOnEarpiece.load(std::memory_order_relaxed)) {
         const auto channelCount = getChannelCount(mMixPortConfig.channelMask.value());
         const auto sampleRate = mMixPortConfig.sampleRate.value().value;
         const auto pcmType = mMixPortConfig.format.value().pcm;
@@ -700,13 +706,6 @@ ndk::ScopedAStatus StreamOutPrimary::getHwVolume(std::vector<float>* _aidl_retur
     *_aidl_return = mVolumes;
     LOG(VERBOSE) << __func__ << mLogPrefix << ::android::internal::ToString(mVolumes);
     return ndk::ScopedAStatus::ok();
-}
-
-bool StreamOutPrimary::onEarpiece() const {
-    return std::any_of(mConnectedDevices.cbegin(), mConnectedDevices.cend(), [](const auto& d) {
-        return d.type.type ==
-               ::aidl::android::media::audio::common::AudioDeviceType::OUT_SPEAKER_EARPIECE;
-    });
 }
 
 ndk::ScopedAStatus StreamOutPrimary::setHwVolume(const std::vector<float>& in_channelVolumes) {

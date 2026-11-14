@@ -154,7 +154,8 @@ class StreamOutPrimary : public StreamOut, public StreamCommonImpl, public Platf
 
   private:
     std::string mLogPrefix = "";
-    bool onEarpiece() const;
+    // Set from binder threads in setConnectedDevices(), read by transfer() on the worker thread.
+    std::atomic<bool> mOnEarpiece{false};
     VoipLimiter mVoipLimiter;
     bool isHwVolumeSupported();
     bool isHwFlushSupported();

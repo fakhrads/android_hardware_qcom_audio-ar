@@ -1,168 +1,150 @@
 /*
- * Copyright (C) 2024 The Android Open Source Project
+ * SPDX-License-Identifier: Apache-2.0
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Look-ahead peak limiter for VoIP playback on the onyx earpiece.
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ * Loud or high-pitched far-end speech distorts on the earpiece path once the level that reaches
+ * the DSP goes above about 0.58 of full scale (the call volume step at -4.7 dB is clean, the one
+ * at -2.35 dB is not). Scaling the whole stream down by that much makes every VoIP app quieter,
+ * so only the peaks above the threshold are brought down here, and the rest passes unchanged.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * The output is delayed by a short look-ahead, so the gain is already down when a peak leaves
+ * the delay line. That avoids flattening the waveform tops, which an instant-attack limiter
+ * without look-ahead does and which sounds like the crackle this is meant to remove.
+ *
+ * process() runs on the stream worker thread. reset() may be called from binder threads, so it
+ * only raises a flag that process() acts on.
  */
 
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #if __has_include(<aidl/android/media/audio/common/PcmType.h>)
 #include <aidl/android/media/audio/common/PcmType.h>
-#define HAS_AIDL_PCM_TYPE 1
+#define VOIP_LIMITER_HAS_AIDL_PCM_TYPE 1
 #endif
 
 namespace qti::audio::core {
 
 class VoipLimiter {
   public:
-    static constexpr float kDefaultThreshold = 0.725f;
-    static constexpr float kDefaultReleaseMs = 50.0f;
+    static constexpr float kThreshold = 0.58f;   // -4.7 dBFS, the clean call volume step
+    static constexpr float kLookaheadMs = 3.0f;
+    static constexpr float kReleaseMs = 80.0f;
+    static constexpr size_t kMaxChannels = 8;
 
-    explicit VoipLimiter(float threshold = kDefaultThreshold,
-                         float releaseMs = kDefaultReleaseMs)
-        : mThreshold(threshold),
-          mReleaseMs(releaseMs),
-          mSampleRate(48000),
-          mGain(1.0f) {
-        updateCoefficients();
-    }
+    void reset() { mResetPending.store(true, std::memory_order_release); }
 
-    void reset() {
-        mGain = 1.0f;
-    }
-
-    void setThreshold(float threshold) {
-        mThreshold = std::clamp(threshold, 0.01f, 1.0f);
-    }
-
-    float getThreshold() const {
-        return mThreshold;
-    }
-
-    void setReleaseMs(float releaseMs) {
-        mReleaseMs = std::max(releaseMs, 1.0f);
-        updateCoefficients();
-    }
-
-    float getReleaseMs() const {
-        return mReleaseMs;
-    }
-
-    void setSampleRate(uint32_t sampleRate) {
-        if (sampleRate > 0 && sampleRate != mSampleRate) {
-            mSampleRate = sampleRate;
-            updateCoefficients();
-        }
-    }
-
-    float getGain() const {
-        return mGain;
-    }
-
-    void processInt16(int16_t* buffer, size_t frameCount, size_t channelCount,
+    // Returns false for formats it does not handle; the buffer is then left untouched.
+    bool processInt16(int16_t* buffer, size_t frameCount, size_t channelCount,
                       uint32_t sampleRate) {
-        if (!buffer || frameCount == 0 || channelCount == 0) return;
-        setSampleRate(sampleRate);
-
-        const int32_t maxSample = static_cast<int32_t>(
-                std::clamp(std::round(mThreshold * 32767.0f), 1.0f, 32767.0f));
-
+        if (!prepare(frameCount, channelCount, sampleRate) || !buffer) return false;
         for (size_t f = 0; f < frameCount; ++f) {
-            int16_t* frame = &buffer[f * channelCount];
-            int32_t maxAbs = 0;
+            float in[kMaxChannels];
             for (size_t ch = 0; ch < channelCount; ++ch) {
-                int32_t val = std::abs(static_cast<int32_t>(frame[ch]));
-                if (val > maxAbs) maxAbs = val;
+                in[ch] = static_cast<float>(buffer[f * channelCount + ch]) / 32768.0f;
             }
-
-            float normalizedPeak = static_cast<float>(maxAbs) / 32768.0f;
-            updateGain(normalizedPeak);
-
+            float out[kMaxChannels];
+            processFrame(in, out);
             for (size_t ch = 0; ch < channelCount; ++ch) {
-                float scaled = static_cast<float>(frame[ch]) * mGain;
-                int32_t rounded = static_cast<int32_t>(std::round(scaled));
-                frame[ch] = static_cast<int16_t>(std::clamp(rounded, -maxSample, maxSample));
+                const float s = std::round(out[ch] * 32768.0f);
+                buffer[f * channelCount + ch] =
+                        static_cast<int16_t>(std::clamp(s, -32768.0f, 32767.0f));
             }
         }
+        return true;
     }
 
-    void processFloat(float* buffer, size_t frameCount, size_t channelCount,
+    bool processFloat(float* buffer, size_t frameCount, size_t channelCount,
                       uint32_t sampleRate) {
-        if (!buffer || frameCount == 0 || channelCount == 0) return;
-        setSampleRate(sampleRate);
-
+        if (!prepare(frameCount, channelCount, sampleRate) || !buffer) return false;
         for (size_t f = 0; f < frameCount; ++f) {
-            float* frame = &buffer[f * channelCount];
-            float maxAbs = 0.0f;
-            for (size_t ch = 0; ch < channelCount; ++ch) {
-                float val = std::abs(frame[ch]);
-                if (val > maxAbs) maxAbs = val;
-            }
-
-            updateGain(maxAbs);
-
-            for (size_t ch = 0; ch < channelCount; ++ch) {
-                frame[ch] = std::clamp(frame[ch] * mGain, -mThreshold, mThreshold);
-            }
+            float out[kMaxChannels];
+            processFrame(&buffer[f * channelCount], out);
+            std::copy(out, out + channelCount, &buffer[f * channelCount]);
         }
+        return true;
     }
 
-#ifdef HAS_AIDL_PCM_TYPE
-    void process(void* buffer, size_t frameCount, size_t channelCount, uint32_t sampleRate,
+#ifdef VOIP_LIMITER_HAS_AIDL_PCM_TYPE
+    bool process(void* buffer, size_t frameCount, size_t channelCount, uint32_t sampleRate,
                  ::aidl::android::media::audio::common::PcmType pcmType) {
         using ::aidl::android::media::audio::common::PcmType;
         if (pcmType == PcmType::INT_16_BIT) {
-            processInt16(static_cast<int16_t*>(buffer), frameCount, channelCount, sampleRate);
-        } else if (pcmType == PcmType::FLOAT_32_BIT) {
-            processFloat(static_cast<float*>(buffer), frameCount, channelCount, sampleRate);
+            return processInt16(static_cast<int16_t*>(buffer), frameCount, channelCount,
+                                sampleRate);
         }
+        if (pcmType == PcmType::FLOAT_32_BIT) {
+            return processFloat(static_cast<float*>(buffer), frameCount, channelCount, sampleRate);
+        }
+        return false;
     }
 #endif
 
   private:
-    void updateGain(float normalizedPeak) {
-        float targetGain = 1.0f;
-        if (normalizedPeak > mThreshold && normalizedPeak > 1e-6f) {
-            targetGain = mThreshold / normalizedPeak;
+    bool prepare(size_t frameCount, size_t channelCount, uint32_t sampleRate) {
+        if (frameCount == 0 || channelCount == 0 || channelCount > kMaxChannels ||
+            sampleRate == 0) {
+            return false;
         }
-
-        if (targetGain < mGain) {
-            // Instant attack: catch loud peaks immediately with zero overshoot
-            mGain = targetGain;
-        } else {
-            // Exponential release towards targetGain (usually 1.0 when quiet)
-            mGain += (targetGain - mGain) * (1.0f - mAlphaRel);
+        const bool reconfigure = channelCount != mChannels || sampleRate != mSampleRate;
+        if (reconfigure) {
+            mChannels = channelCount;
+            mSampleRate = sampleRate;
+            mLookahead = std::max<size_t>(1, static_cast<size_t>(sampleRate * kLookaheadMs / 1000.0f));
+            mDelay.assign(mLookahead * mChannels, 0.0f);
+            mGainWindow.assign(mLookahead, 1.0f);
+            // Attack: reach the target within the look-ahead. Release: back to unity smoothly.
+            mAttackCoef = 1.0f - std::exp(-4.0f / static_cast<float>(mLookahead));
+            mReleaseCoef = 1.0f - std::exp(-1000.0f / (kReleaseMs * static_cast<float>(sampleRate)));
         }
+        if (reconfigure || mResetPending.exchange(false, std::memory_order_acq_rel)) {
+            std::fill(mDelay.begin(), mDelay.end(), 0.0f);
+            std::fill(mGainWindow.begin(), mGainWindow.end(), 1.0f);
+            mPos = 0;
+            mGain = 1.0f;
+        }
+        return true;
     }
 
-    void updateCoefficients() {
-        if (mSampleRate > 0 && mReleaseMs > 0.0f) {
-            mAlphaRel = std::exp(-1.0f / (static_cast<float>(mSampleRate) * (mReleaseMs / 1000.0f)));
-        } else {
-            mAlphaRel = 0.999f;
+    void processFrame(const float* in, float* out) {
+        // Gain this frame needs so its peak stays at the threshold.
+        float peak = 0.0f;
+        for (size_t ch = 0; ch < mChannels; ++ch) peak = std::max(peak, std::fabs(in[ch]));
+        mGainWindow[mPos] = peak > kThreshold ? kThreshold / peak : 1.0f;
+
+        // Lowest gain needed by anything still inside the look-ahead window.
+        float target = 1.0f;
+        for (float g : mGainWindow) target = std::min(target, g);
+
+        mGain += (target - mGain) * (target < mGain ? mAttackCoef : mReleaseCoef);
+
+        // Output the frame that entered the delay line one look-ahead ago, then store this one.
+        for (size_t ch = 0; ch < mChannels; ++ch) {
+            const float delayed = mDelay[mPos * mChannels + ch];
+            // The smoothed attack can leave a sliver above the threshold; hold it there.
+            out[ch] = std::clamp(delayed * mGain, -kThreshold, kThreshold);
+            mDelay[mPos * mChannels + ch] = in[ch];
         }
+        mPos = (mPos + 1) % mLookahead;
     }
 
-    float mThreshold;
-    float mReleaseMs;
-    uint32_t mSampleRate;
-    float mGain;
-    float mAlphaRel;
+    std::atomic<bool> mResetPending{true};
+    size_t mChannels = 0;
+    uint32_t mSampleRate = 0;
+    size_t mLookahead = 1;
+    size_t mPos = 0;
+    float mGain = 1.0f;
+    float mAttackCoef = 1.0f;
+    float mReleaseCoef = 0.001f;
+    std::vector<float> mDelay;
+    std::vector<float> mGainWindow;
 };
 
 } // namespace qti::audio::core
