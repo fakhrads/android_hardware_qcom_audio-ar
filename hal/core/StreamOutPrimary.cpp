@@ -730,6 +730,11 @@ ndk::ScopedAStatus StreamOutPrimary::setHwVolume(const std::vector<float>& in_ch
         return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_ARGUMENT);
     }
 
+    if (mTag == Usecase::VOIP_PLAYBACK && !in_channelVolumes.empty()) {
+        mVoipLimiter.setHwVolume(
+                *std::max_element(in_channelVolumes.cbegin(), in_channelVolumes.cend()));
+    }
+
     if (!mPalHandle) {
         mVolumes = in_channelVolumes;
         LOG(DEBUG) << __func__ << mLogPrefix << " cache volume "
