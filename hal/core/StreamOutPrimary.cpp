@@ -139,6 +139,7 @@ ndk::ScopedAStatus StreamOutPrimary::setConnectedDevices(
         const std::vector<::aidl::android::media::audio::common::AudioDevice>& devices) {
     mWorker->setIsConnected(!devices.empty());
     mConnectedDevices = devices;
+    mVoipLimiter.reset();
 
     return configureConnectedDevices_I();
 }
@@ -177,11 +178,6 @@ ndk::ScopedAStatus StreamOutPrimary::configureConnectedDevices_I() {
     }
 
     LOG(DEBUG) << __func__ << mLogPrefix << " connected to " << mConnectedDevices;
-
-    // The VoIP earpiece headroom depends on the device, so reapply the volume after a switch.
-    if (mTag == Usecase::VOIP_PLAYBACK && mHwVolumeSupported) {
-        mPlatform.setVolume(mPalHandle, applyVoipEarpieceHeadroom(mVolumes));
-    }
 
     return ndk::ScopedAStatus::ok();
 }
@@ -305,6 +301,7 @@ ndk::ScopedAStatus StreamOutPrimary::configureMMapStream(int32_t* fd, int64_t* b
 }
 
 ::android::status_t StreamOutPrimary::flush() {
+    mVoipLimiter.reset();
     if (!mPalHandle) {
         LOG(WARNING) << __func__ << mLogPrefix << ": stream is not configured ";
         return ::android::OK;
@@ -386,6 +383,7 @@ void StreamOutPrimary::resume() {
 }
 
 ::android::status_t StreamOutPrimary::standby() {
+    mVoipLimiter.reset();
     if (!mPalHandle) {
         LOG(WARNING) << __func__ << mLogPrefix << ": stream is not configured ";
         return ::android::OK;
@@ -452,6 +450,13 @@ void StreamOutPrimary::resume() {
     if (frameCount == 0) {
         *actualFrameCount = 0;
         return burstZero();
+    }
+
+    if (mTag == Usecase::VOIP_PLAYBACK && onEarpiece()) {
+        const auto channelCount = getChannelCount(mMixPortConfig.channelMask.value());
+        const auto sampleRate = mMixPortConfig.sampleRate.value().value;
+        const auto pcmType = mMixPortConfig.format.value().pcm;
+        mVoipLimiter.process(buffer, frameCount, channelCount, sampleRate, pcmType);
     }
 
     pal_buffer palBuffer{};
@@ -697,27 +702,11 @@ ndk::ScopedAStatus StreamOutPrimary::getHwVolume(std::vector<float>* _aidl_retur
     return ndk::ScopedAStatus::ok();
 }
 
-/*
- * VoIP on the onyx earpiece distorts on loud or high-pitched far-end speech at full volume (gain
- * 1.0), while one step down (0.7627, -2.35 dB) stays clean. The earpiece path also carries the
- * ultrasound proximity signal on the same amplifier, so keep that much headroom for VoIP on the
- * earpiece by scaling the requested volume. The speaker, Bluetooth and cellular calls are not
- * touched, and mVolumes keeps the unscaled value so device switches reapply it correctly.
- */
-static constexpr float kVoipEarpieceMaxGain = 0.725f;
-
-std::vector<float> StreamOutPrimary::applyVoipEarpieceHeadroom(
-        const std::vector<float>& volumes) const {
-    if (mTag != Usecase::VOIP_PLAYBACK) return volumes;
-    const bool onEarpiece =
-            std::any_of(mConnectedDevices.cbegin(), mConnectedDevices.cend(), [](const auto& d) {
-                return d.type.type ==
-                       ::aidl::android::media::audio::common::AudioDeviceType::OUT_SPEAKER_EARPIECE;
-            });
-    if (!onEarpiece) return volumes;
-    std::vector<float> scaled(volumes);
-    for (auto& vol : scaled) vol *= kVoipEarpieceMaxGain;
-    return scaled;
+bool StreamOutPrimary::onEarpiece() const {
+    return std::any_of(mConnectedDevices.cbegin(), mConnectedDevices.cend(), [](const auto& d) {
+        return d.type.type ==
+               ::aidl::android::media::audio::common::AudioDeviceType::OUT_SPEAKER_EARPIECE;
+    });
 }
 
 ndk::ScopedAStatus StreamOutPrimary::setHwVolume(const std::vector<float>& in_channelVolumes) {
@@ -749,8 +738,7 @@ ndk::ScopedAStatus StreamOutPrimary::setHwVolume(const std::vector<float>& in_ch
         return ndk::ScopedAStatus::ok();
     }
 
-    if (int32_t ret = mPlatform.setVolume(mPalHandle, applyVoipEarpieceHeadroom(in_channelVolumes));
-        ret) {
+    if (int32_t ret = mPlatform.setVolume(mPalHandle, in_channelVolumes); ret) {
         LOG(ERROR) << __func__ << mLogPrefix << " failed to set volume";
         return ndk::ScopedAStatus::fromExceptionCode(EX_ILLEGAL_STATE);
     }

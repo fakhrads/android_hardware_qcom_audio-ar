@@ -7,8 +7,9 @@
 
 #include <qti-audio-core/AudioUsecase.h>
 #include <qti-audio-core/HalOffloadEffects.h>
-#include <qti-audio-core/Stream.h>
 #include <qti-audio-core/PlatformStreamCallback.h>
+#include <qti-audio-core/Stream.h>
+#include <qti-audio-core/VoipLimiter.h>
 
 namespace qti::audio::core {
 
@@ -153,7 +154,8 @@ class StreamOutPrimary : public StreamOut, public StreamCommonImpl, public Platf
 
   private:
     std::string mLogPrefix = "";
-    std::vector<float> applyVoipEarpieceHeadroom(const std::vector<float>& volumes) const;
+    bool onEarpiece() const;
+    VoipLimiter mVoipLimiter;
     bool isHwVolumeSupported();
     bool isHwFlushSupported();
     bool isHwPauseSupported();
