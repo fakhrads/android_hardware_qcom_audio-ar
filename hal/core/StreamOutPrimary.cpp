@@ -3,7 +3,10 @@
  * SPDX-License-Identifier: BSD-3-Clause-Clear
  */
 
+#include <cerrno>
+#include <chrono>
 #include <cmath>
+#include <thread>
 
 #define LOG_TAG "AHAL_StreamOut_QTI"
 
@@ -1068,10 +1071,29 @@ void StreamOutPrimary::configure() {
     }
 
     const auto palOpenApiStartTime = std::chrono::steady_clock::now();
-    if (int32_t ret = ::pal_stream_open(attr.get(), palDevices.size(), palDevices.data(), 0,
-                                        nullptr, palFn, cookie, &(this->mPalHandle));
-        ret) {
-        LOG(ERROR) << __func__ << mLogPrefix << " pal stream open failed!!! ret:" << ret;
+    int32_t palOpenRet = ::pal_stream_open(attr.get(), palDevices.size(), palDevices.data(), 0,
+                                           nullptr, palFn, cookie, &(this->mPalHandle));
+    /*
+     * The Bluetooth stack ends the A2DP session and starts it again (about 0.3 s) when it switches
+     * the codec for game audio. A stream opened in that gap fails with -ENODEV, and transfer()
+     * then drops the write, so a short game sound is lost. Wait for the session instead.
+     */
+    if (palOpenRet == -ENODEV && hasBluetoothA2dpDevice(mConnectedDevices)) {
+        constexpr auto kBtSessionWait = std::chrono::milliseconds(600);
+        constexpr auto kBtSessionStep = std::chrono::milliseconds(20);
+        const auto deadline = std::chrono::steady_clock::now() + kBtSessionWait;
+        while (palOpenRet == -ENODEV && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(kBtSessionStep);
+            palOpenRet = ::pal_stream_open(attr.get(), palDevices.size(), palDevices.data(), 0,
+                                           nullptr, palFn, cookie, &(this->mPalHandle));
+        }
+        LOG(INFO) << __func__ << mLogPrefix << " bluetooth session wait took "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - palOpenApiStartTime).count()
+                  << " ms, ret:" << palOpenRet;
+    }
+    if (palOpenRet) {
+        LOG(ERROR) << __func__ << mLogPrefix << " pal stream open failed!!! ret:" << palOpenRet;
         mPalHandle = nullptr;
         return;
     }
