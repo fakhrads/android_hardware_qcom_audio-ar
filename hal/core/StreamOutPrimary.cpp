@@ -837,12 +837,17 @@ int32_t StreamOutPrimary::setAggregateSourceMetadata(bool voiceActive) {
 
     LOG(VERBOSE) << __func__ << mLogPrefix << " out streams not empty size is " << outStreams.size();
 
+    bool hasMediaTrack = false;
     for (auto it = outStreams.begin(); it < outStreams.end(); it++) {
-        if (it->lock() && !it->lock()->isClosed()) {
+        if (auto sharedStream = it->lock(); sharedStream && !sharedStream->isClosed()) {
             ::aidl::android::hardware::audio::common::SourceMetadata srcMetadata;
-            it->lock()->getMetadata(srcMetadata);
+            sharedStream->getMetadata(srcMetadata);
             track_count_total += srcMetadata.tracks.size();
-        } else {
+            for (const auto& item : srcMetadata.tracks) {
+                if (static_cast<audio_usage_t>(item.usage) == AUDIO_USAGE_MEDIA) {
+                    hasMediaTrack = true;
+                }
+            }
         }
     }
     LOG(VERBOSE) << __func__ << mLogPrefix << " out streams size after deleting : " << outStreams.size()
@@ -860,14 +865,17 @@ int32_t StreamOutPrimary::setAggregateSourceMetadata(bool voiceActive) {
     int32_t totalTracks = 0;
     for (auto it = outStreams.begin(); it != outStreams.end(); it++) {
         ::aidl::android::hardware::audio::common::SourceMetadata srcMetadata;
-        if (it->lock()) {
-            it->lock()->getMetadata(srcMetadata);
+        if (auto sharedStream = it->lock(); sharedStream && !sharedStream->isClosed()) {
+            sharedStream->getMetadata(srcMetadata);
             for (auto& item : srcMetadata.tracks) {
                 // check tracks size in this stream metadata not to exceed total count
                 if (totalTracks >= track_count_total) {
                     LOG(WARNING) << __func__ << mLogPrefix << ": mismatch in total tracks for metadata allocation";
                     break;
                 }
+
+                const auto usage = static_cast<audio_usage_t>(item.usage);
+                const auto contentType = static_cast<audio_content_type_t>(item.contentType);
 
                 /* currently after cs call ends, we are getting metadata as
                 * usage voice and content speech, this is causing BT to again
@@ -876,14 +884,25 @@ int32_t StreamOutPrimary::setAggregateSourceMetadata(bool voiceActive) {
                 */
 
                 if (!voiceActive && (mPlatform.getCallMode() != 3) &&
-                    (AUDIO_USAGE_VOICE_COMMUNICATION == static_cast<audio_usage_t>(item.usage)) &&
-                    (AUDIO_CONTENT_TYPE_SPEECH ==
-                     static_cast<audio_content_type_t>(item.contentType))) {
+                    (AUDIO_USAGE_VOICE_COMMUNICATION == usage) &&
+                    (AUDIO_CONTENT_TYPE_SPEECH == contentType)) {
                     btSourceMetadata.track_count--;
                 } else {
-                    btSourceMetadata.tracks->usage = static_cast<audio_usage_t>(item.usage);
-                    btSourceMetadata.tracks->content_type =
-                            static_cast<audio_content_type_t>(item.contentType);
+                    /*
+                     * Bluetooth A2DP treats AUDIO_USAGE_GAME as higher priority than
+                     * AUDIO_USAGE_MEDIA and reconfigures the A2DP session into/out of
+                     * low-latency gaming mode on every change. Report game tracks as
+                     * media when they are short sonification effects (e.g. SoundPool
+                     * piece moves) or while a media stream is already playing, so music
+                     * and game sounds mix without suspending the A2DP stream.
+                     */
+                    if (usage == AUDIO_USAGE_GAME &&
+                        (contentType == AUDIO_CONTENT_TYPE_SONIFICATION || hasMediaTrack)) {
+                        btSourceMetadata.tracks->usage = AUDIO_USAGE_MEDIA;
+                    } else {
+                        btSourceMetadata.tracks->usage = usage;
+                    }
+                    btSourceMetadata.tracks->content_type = contentType;
                     LOG(VERBOSE) << __func__ << mLogPrefix << " source metadata usage is "
                                  << btSourceMetadata.tracks->usage << " content is "
                                  << btSourceMetadata.tracks->content_type;
